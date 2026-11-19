@@ -20,6 +20,7 @@ def torch2openvino(
     int8_detect: bool = False,
     device: str | None = None,
     prefix: str = "",
+    dynamo: bool = False,
 ) -> Any:
     """Export a PyTorch model to OpenVINO format with optional INT8 quantization.
 
@@ -33,6 +34,7 @@ def torch2openvino(
         int8_detect (bool): Whether to keep the detection head in floating-point precision during INT8 quantization.
         device (str | None): Inference device; ``npu`` selects symmetric INT8 activations for CNN detection heads.
         prefix (str): Prefix for log messages.
+        dynamo (bool): Use experimental torch.export conversion instead of TorchScript (requires torch>=2.6).
 
     Returns:
         (ov.Model): The converted OpenVINO model.
@@ -42,12 +44,22 @@ def torch2openvino(
     LOGGER.info(f"\n{prefix} starting export with openvino {ov.__version__}...")
 
     input_shape = [i.shape for i in im] if isinstance(im, (list, tuple)) else im.shape
-    # Hand OpenVINO an already-traced ScriptModule (torchscript/coreml exports trace the same way), not a raw
-    # nn.Module, so it doesn't re-trace internally with check_trace=True - that re-trace-and-diff sanity check is
-    # non-deterministic on NMS models and fails with "Graphs differed across invocations!". check_trace=False skips
-    # the same check on our own trace.
-    ts = torch.jit._trace.trace(model, im, strict=False, check_trace=False)
-    ov_model = ov.convert_model(ts, input=None if dynamic else input_shape, example_input=im)
+    if dynamo:
+        from inspect import signature
+
+        from ultralytics.utils.checks import check_version
+
+        check_version(torch.__version__, ">=2.6.0", name="torch", hard=True)
+        if "dynamo" not in signature(ov.convert_model).parameters:
+            raise RuntimeError("dynamo=True requires an OpenVINO build with convert_model(dynamo=...) support.")
+        shapes = input_shape if isinstance(im, (list, tuple)) else [input_shape]
+        if dynamic:
+            shapes = [[-1, shape[1], -1, -1] for shape in shapes]
+        ov_model = ov.convert_model(model, input=shapes, example_input=im, dynamo=True)
+    else:
+        # Skip the nondeterministic re-trace check for NMS models.
+        ts = torch.jit._trace.trace(model, im, strict=False, check_trace=False)
+        ov_model = ov.convert_model(ts, input=None if dynamic else input_shape, example_input=im)
     if quantize == 8:
         import nncf
 

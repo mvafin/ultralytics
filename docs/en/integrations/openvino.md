@@ -134,7 +134,31 @@ OpenVINO export supports all seven Ultralytics tasks with [YOLOv8](../models/yol
 | `batch`    | `int`                     | `1`          | Batch size of the exported model. A static export has this batch size fixed in the input shape. Also the batch size used for INT8 calibration.                                                                                                                                                                                                                                                                                                                     |
 | `device`   | `str`                     | `None`       | The export always runs on the CPU. With `quantize=8`, `device=npu` selects symmetric INT8 activations for YOLO detect, segment, pose, and OBB models, which run up to 2x faster on Intel NPUs.                                                                                                                                                                                                                                                                     |
 
+`dynamo=False` is an additional experimental boolean argument on this branch, described below.
+
 For the arguments shared by all formats, see the [Export mode documentation](../modes/export.md).
+
+### Experimental Dynamo Conversion
+
+This experiment branch adds `dynamo=True` to use OpenVINO's `torch.export` conversion path instead of TorchScript:
+
+```python
+from ultralytics import YOLO
+
+YOLO("yolo26n.pt").export(format="openvino", dynamo=True, quantize=32, batch=2, imgsz=640)
+```
+
+The default remains `dynamo=False`. The experimental path requires PyTorch >=2.6 and an OpenVINO build exposing
+`convert_model(..., dynamo=True)`. It raises conversion errors instead of falling back to TorchScript. The experiment
+uses the pending OpenVINO fixes in [openvinotoolkit/openvino#40055](https://github.com/openvinotoolkit/openvino/pull/40055).
+
+Validation is limited to FP32 raw outputs (`nms=None`) for YOLO26 nano detection, segmentation, classification, pose,
+and OBB. Dynamic export requests dynamic batch, height, and width, but PyTorch may reject the request when the model
+requires additional shape constraints, such as image dimensions divisible by the model stride. A failed dynamic
+export is not replaced with a static model. Quantization and embedded NMS are not validated with this option.
+
+The [IR comparison experiment](https://github.com/mvafin/ultralytics/tree/experiment/openvino-dynamo-ir/examples/python/OpenVINO-Dynamo)
+compares serialized graphs and exact constant values without running inference or performance tests.
 
 ### INT8 Quantization
 

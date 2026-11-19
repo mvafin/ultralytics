@@ -189,7 +189,7 @@ def export_formats():
             "_openvino_model",
             True,
             False,
-            ["batch", "data", "dynamic", "quantize", "nms", "fraction"],
+            ["batch", "data", "dynamic", "dynamo", "quantize", "nms", "fraction"],
             "base",
         ],
         [
@@ -1356,6 +1356,7 @@ class Exporter:
             model=NMSModel(self.model, self.args) if self.args.nms else self.model,
             im=self.im,
             dynamic=self.args.dynamic,
+            dynamo=self.args.dynamo,
             quantize=self.args.quantize,
             calibration_dataset=calibration_dataset,
             int8_detect=isinstance(getattr(self.model, "model", [None])[-1], (Detect, RTDETRDecoder)),
