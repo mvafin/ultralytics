@@ -1731,7 +1731,7 @@ class RTDETRDecoder(nn.Module):
         k = min(self.num_queries, self.max_det) if self.export else self.num_queries
         k = (
             (torch._shape_as_tensor(scores)[1] * self.nc).clamp(max=k)
-            if self.dynamic
+            if self.dynamic and not torch.compiler.is_compiling()
             else min(k, scores.shape[1] * self.nc)
         )
         groups = 8 if self.export and self.format == "engine" and not self.dynamic else 1
@@ -1837,7 +1837,7 @@ class RTDETRDecoder(nn.Module):
         groups = 8 if self.export and self.format == "engine" and not self.dynamic else 1
         k = (
             torch._shape_as_tensor(enc_outputs_scores)[1].clamp(max=self.num_queries)
-            if self.dynamic
+            if self.dynamic and not torch.compiler.is_compiling()
             else min(self.num_queries, enc_outputs_scores.shape[1])
         )
         topk_ind = Detect._grouped_topk(enc_outputs_scores.max(-1).values, k, groups)[1].view(-1)

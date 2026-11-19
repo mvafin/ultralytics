@@ -7,7 +7,7 @@ There are ten IR pairs. No inference, dataset accuracy evaluation, or performanc
 
 ## Runtime
 
-Use an environment with this branch installed, PyTorch >=2.6, and an OpenVINO build supporting
+Use an environment with this branch installed, the current PyTorch release (tested with 2.15), and an OpenVINO build supporting
 `ov.convert_model(..., dynamo=True)`. The initial experiment uses PyTorch 2.11.0+cpu, Python 3.12.12, and
 OpenVINO source revision `eb78adba5f9fa4c8b38792ad0028e7c32fdae1b2`
 ([openvinotoolkit/openvino#40055](https://github.com/openvinotoolkit/openvino/pull/40055)).
@@ -54,6 +54,30 @@ equality alone is not a claim that the serialized XML/BIN or the complete deploy
 Dynamic Dynamo export requests a dynamic batch and height/width of at least twice the model's largest stride.
 `torch.export` may infer a nonzero minimum spatial size, and OpenVINO rejects a requested unrestricted dimension
 that is wider than the exported range. Inference inputs must still satisfy YOLO's stride requirements.
+
+With `nms=True`, the dynamic batch range is **1 through the configured `batch`** because embedded NMS unrolls
+one branch per padded image. Larger batches are rejected by the exported model rather than silently truncated.
+The Dynamo NMS path uses symbolic dimensions instead of `torch._shape_as_tensor`; TorchScript is unchanged.
+RT-DETR uses symbolic TopK sizes during Dynamo capture as well. Dynamic end-to-end heads and RT-DETR require
+OpenVINO symbolic `min` support; dynamic NMS also uses symbolic `max`. These paths target the current PyTorch
+release (2.15), with no older-version compatibility workarounds.
+
+On PyTorch 2.15.0+cpu and TorchVision 0.29.2+cpu, the updated exporter and OpenVINO symbolic min/max lowering
+export YOLOv8n embedded NMS, YOLO26n end-to-end, and RT-DETR-l with dynamic shapes. CPU FP32 outputs were
+compared to the export-prepared PyTorch models at `(2,3,640,640)`, `(1,3,320,480)`, `(1,3,64,96)`, and
+`(2,3,480,320)`, using the same resized bus image, with `rtol=atol=1e-4` and exact output-shape checks.
+YOLO26n correctly reduces its output to 126 detections at 64x96 instead of forcing a fixed TopK of 300.
+NMS batch 3 is rejected when exported with `batch=2`. These checks do not establish dataset accuracy or latency.
+The existing TorchScript end-to-end YOLO path specializes K=300 and fails at 64x96 (only 126 anchors);
+the Dynamo path handles that case. This experiment does not change the default TorchScript behavior.
+
+The focused embedded-NMS regression requires the experimental OpenVINO source build and is opt-in:
+
+```bash
+python -m pytest tests/test_exports.py --slow -k openvino_dynamo_nms_batch -q
+```
+
+It checks nonempty detections, exact output batch sizes for batches 1 and 2, and rejection of batch 3.
 
 ## Initial results
 

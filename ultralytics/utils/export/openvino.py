@@ -60,7 +60,9 @@ def torch2openvino(
             # torch.export infers a lower spatial bound; request a stride-aligned range that excludes tiny inputs.
             min_size = 2 * int(torch.as_tensor(stride).max())
             spatial = ov.Dimension(min_size, -1)
-            shapes = [[-1, shape[1], spatial, spatial] for shape in shapes]
+            nms_args = getattr(model, "args", None)
+            batch = ov.Dimension(1, nms_args.batch) if getattr(nms_args, "nms", False) else -1
+            shapes = [[batch, shape[1], spatial, spatial] for shape in shapes]
         ov_model = ov.convert_model(model, input=shapes, example_input=im, dynamo=True)
     else:
         # Skip the nondeterministic re-trace check for NMS models.

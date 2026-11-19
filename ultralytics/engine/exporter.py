@@ -2072,7 +2072,13 @@ class NMSModel(torch.nn.Module):
         pred = pred.transpose(-1, -2)  # shape(1,84,6300) to shape(1,6300,84)
         extra_shape = pred.shape[-1] - (4 + len(self.model.names))  # extras from Segment, OBB, Pose
         if self.args.dynamic and self.args.batch > 1:  # batch size needs to always be same due to loop unroll
-            pad = pred.new_zeros((self.args.batch - torch._shape_as_tensor(pred)[0]).clamp(min=0), *pred.shape[1:])
+            batch_size = (
+                torch.scalar_tensor(bs, dtype=torch.int64, device=pred.device)
+                if torch.compiler.is_compiling()
+                else torch._shape_as_tensor(pred)[0]
+            )
+            # Tensor-valued padding avoids specializing the empty padding of the example batch.
+            pad = pred.new_zeros((self.args.batch - batch_size).clamp(min=0), *pred.shape[1:])
             pred = torch.cat((pred, pad))
         if self.args.dynamic and self.args.format == "onnx" and self.obb:
             pred = torch.cat((pred, pred.new_zeros(pred.shape[0], self.args.max_det * 5, pred.shape[2])), dim=1)
@@ -2080,7 +2086,8 @@ class NMSModel(torch.nn.Module):
         scores, classes = scores.max(dim=-1)
         # (N, max_det, 4 coords + 1 class score + 1 class label + extra_shape).
         out = pred.new_zeros(pred.shape[0], self.args.max_det, boxes.shape[-1] + 2 + extra_shape)
-        for i in range(bs):
+        batch = self.args.batch if self.args.dynamic and torch.compiler.is_compiling() else bs
+        for i in range(batch):
             box, cls, score, extra = boxes[i], classes[i], scores[i], extras[i]
             mask = score > self.args.conf
             if self.is_tf or (self.args.format == "onnx" and self.obb):
@@ -2095,7 +2102,12 @@ class NMSModel(torch.nn.Module):
             # `8` is the minimum value experimented to get correct NMS results for obb
             multiplier = 8 if self.obb else 1 / max(len(self.model.names), 1)
             # Normalize boxes for NMS since large values for class offset causes issue with int8 quantization
-            nmsbox = multiplier * (nmsbox / torch._shape_as_tensor(x)[2:].max().to(nmsbox.dtype))
+            normalizer = (
+                torch.sym_max(x.shape[2], x.shape[3])
+                if torch.compiler.is_compiling()
+                else torch._shape_as_tensor(x)[2:].max().to(nmsbox.dtype)
+            )
+            nmsbox = multiplier * (nmsbox / normalizer)
             if not self.args.agnostic_nms:  # class-wise NMS
                 end = 2 if self.obb else 4
                 # fully explicit expansion otherwise reshape error

@@ -227,6 +227,56 @@ def test_export_openvino(nms, isolated_model):
 
 
 @pytest.mark.slow
+def test_export_openvino_dynamo_nms_batch():
+    """Keep NMS output batch dynamic after padding and unrolling the configured maximum."""
+    from inspect import signature
+
+    ov = pytest.importorskip("openvino")
+    if "dynamo" not in signature(ov.convert_model).parameters:
+        pytest.skip("Requires an OpenVINO source build with Dynamo conversion support.")
+
+    from ultralytics.engine.exporter import NMSModel
+    from ultralytics.utils.export.openvino import torch2openvino
+
+    class Predictions(torch.nn.Module):
+        names = {0: "object"}
+        task = "detect"
+
+        def __init__(self):
+            super().__init__()
+            self.register_buffer(
+                "predictions",
+                torch.tensor([[1, 1, 10, 10, 0.9], [20, 20, 30, 30, 0.8], [1, 1, 10, 10, 0.7]]).T,
+            )
+
+        def forward(self, x):
+            return self.predictions.unsqueeze(0).expand(x.shape[0], -1, -1)
+
+    args = get_cfg(
+        overrides={
+            "format": "openvino",
+            "dynamic": True,
+            "batch": 2,
+            "nms": True,
+            "max_det": 3,
+            "conf": 0.25,
+            "iou": 0.45,
+        }
+    )
+    model = NMSModel(Predictions(), args).eval()
+    converted = torch2openvino(model, torch.rand(2, 3, 64, 96), dynamic=True, dynamo=True)
+    exported = ov.Core().compile_model(converted, "CPU", {"INFERENCE_PRECISION_HINT": "f32"})
+    for shape in [(2, 3, 64, 96), (1, 3, 96, 64)]:
+        image = torch.rand(shape)
+        result = torch.from_numpy(exported([image.numpy()])[0])
+        assert result.shape == (shape[0], 3, 6)
+        assert (result[..., 4] > 0).sum() == 2 * shape[0]
+        torch.testing.assert_close(result, model(image), rtol=0, atol=0)
+    with pytest.raises(RuntimeError):
+        exported([torch.rand(3, 3, 64, 96).numpy()])
+
+
+@pytest.mark.slow
 @pytest.mark.skipif(not TORCH_2_1, reason="OpenVINO requires torch>=2.1")
 @pytest.mark.parametrize(
     "task, dynamic, quantize, batch, nms",
