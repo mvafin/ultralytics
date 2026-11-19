@@ -54,7 +54,13 @@ def torch2openvino(
             raise RuntimeError("dynamo=True requires an OpenVINO build with convert_model(dynamo=...) support.")
         shapes = input_shape if isinstance(im, (list, tuple)) else [input_shape]
         if dynamic:
-            shapes = [[-1, shape[1], -1, -1] for shape in shapes]
+            stride = getattr(model, "stride", None)
+            if stride is None:
+                stride = getattr(getattr(model, "model", None), "stride", 32)
+            # torch.export infers a lower spatial bound; request a stride-aligned range that excludes tiny inputs.
+            min_size = 2 * int(torch.as_tensor(stride).max())
+            spatial = ov.Dimension(min_size, -1)
+            shapes = [[-1, shape[1], spatial, spatial] for shape in shapes]
         ov_model = ov.convert_model(model, input=shapes, example_input=im, dynamo=True)
     else:
         # Skip the nondeterministic re-trace check for NMS models.

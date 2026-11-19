@@ -153,9 +153,9 @@ The default remains `dynamo=False`. The experimental path requires PyTorch >=2.6
 uses the pending OpenVINO fixes in [openvinotoolkit/openvino#40055](https://github.com/openvinotoolkit/openvino/pull/40055).
 
 Validation is limited to FP32 raw outputs (`nms=None`) for YOLO26 nano detection, segmentation, classification, pose,
-and OBB. Dynamic export requests dynamic batch, height, and width, but PyTorch may reject the request when the model
-requires additional shape constraints, such as image dimensions divisible by the model stride. A failed dynamic
-export is not replaced with a static model. Quantization and embedded NMS are not validated with this option.
+and OBB. Dynamic export requests dynamic batch and height/width of at least twice the model's largest stride; inputs
+must still satisfy the model stride. A failed dynamic export is not replaced with a static model. Quantization and
+embedded NMS are not validated with this option.
 
 The [IR comparison experiment](https://github.com/mvafin/ultralytics/tree/experiment/openvino-dynamo-ir/examples/python/OpenVINO-Dynamo)
 compares serialized graphs and exact constant values without running inference or performance tests.

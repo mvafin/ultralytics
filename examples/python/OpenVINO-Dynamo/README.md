@@ -51,10 +51,9 @@ establish only the tested artifact identity, not performance or support for unte
 Public tensor names and deployment metadata must also be considered when interpreting the experiment; graph
 equality alone is not a claim that the serialized XML/BIN or the complete deployment contract is identical.
 
-Dynamic conversion may fail because `torch.export` requires image dimensions to satisfy stride/divisibility
-constraints that independent dynamic dimensions do not express. Keep those failures separate from converted IR
-differences. Before fixing an OpenVINO issue, check it against the latest #40055 implementation; do not duplicate
-prerequisite fixes.
+Dynamic Dynamo export requests a dynamic batch and height/width of at least twice the model's largest stride.
+`torch.export` may infer a nonzero minimum spatial size, and OpenVINO rejects a requested unrestricted dimension
+that is wider than the exported range. Inference inputs must still satisfy YOLO's stride requirements.
 
 ## Initial results
 
@@ -87,6 +86,18 @@ intermediate dimensions to one. The independent named dimensions used by the pre
 path do not express those complete constraints. These failures are recorded as capture/shape-contract limitations,
 not unsupported-operator failures or newly established translator bugs.
 
-**Conclusion:** static export works on the tested runtime, but IR identity is not established, and numerical
-equivalence remains untested. No performance tests were run. No distinct incorrect OpenVINO translation was
-confirmed, so this experiment does not yet justify a separate OpenVINO fix PR.
+**Initial conclusion:** static export worked on the tested runtime, but IR identity was not established. No
+performance tests were run.
+
+## Follow-up results
+
+The follow-up used #40055 Python and OVC revision `40a5ab5887693f509b4ce9f6f868364ad48195bb` with the same native
+build. Its newer native changes are limited to random operators that these models do not use.
+
+- Static FP32 IR differences are confined to shape computations. CPU execution graphs match for detection,
+  segmentation, classification, and pose; OBB has one extra one-element constant. On a two-image batch, outputs are
+  bit-identical for all five models.
+- With bounded spatial dimensions, all five dynamic Dynamo exports succeed. Detection-family models export as
+  `[?,3,64..,64..]`; classification exports as `[?,3,2..,2..]`. CPU FP32 outputs are bit-identical to TorchScript
+  dynamic exports for shapes `(2,3,640,640)`, `(1,3,320,480)`, `(3,3,480,640)`, `(1,3,64,64)`, and `(1,3,1024,768)`.
+- INT8 naming and dynamic-shape latency remain untested follow-up work.
