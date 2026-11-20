@@ -52,18 +52,28 @@ def torch2openvino(
         check_version(torch.__version__, ">=2.6.0", name="torch", hard=True)
         if "dynamo" not in signature(ov.convert_model).parameters:
             raise RuntimeError("dynamo=True requires an OpenVINO build with convert_model(dynamo=...) support.")
-        shapes = input_shape if isinstance(im, (list, tuple)) else [input_shape]
         if dynamic:
+            from torch.export import Dim
+
             stride = getattr(model, "stride", None)
             if stride is None:
                 stride = getattr(getattr(model, "model", None), "stride", 32)
-            # torch.export infers a lower spatial bound; request a stride-aligned range that excludes tiny inputs.
-            min_size = 2 * int(torch.as_tensor(stride).max())
-            spatial = ov.Dimension(min_size, -1)
+            stride = int(torch.as_tensor(stride).max())
             nms_args = getattr(model, "args", None)
-            batch = ov.Dimension(1, nms_args.batch) if getattr(nms_args, "nms", False) else -1
-            shapes = [[batch, shape[1], spatial, spatial] for shape in shapes]
-        ov_model = ov.convert_model(model, input=shapes, example_input=im, dynamo=True)
+            batch = Dim.AUTO(min=1, max=nms_args.batch) if getattr(nms_args, "nms", False) else Dim.AUTO
+            # Spatial sizes are stride multiples (at least two strides), which keeps skip-connection concats aligned.
+            # Stating this as a derived Dim spares torch.export nested floor-division guards it cannot solve (YOLOv9).
+            if stride > 1:
+                h, w = stride * Dim("height", min=2), stride * Dim("width", min=2)
+            else:  # stride-free models (classification): let torch.export infer the bounds
+                h = w = Dim.AUTO(min=2)
+            spec = {0: batch, 2: h, 3: w}
+            inputs = tuple(im) if isinstance(im, (list, tuple)) else (im,)
+            program = torch.export.export(model, inputs, dynamic_shapes=tuple(spec for _ in inputs))
+            ov_model = ov.convert_model(program)
+        else:
+            shapes = input_shape if isinstance(im, (list, tuple)) else [input_shape]
+            ov_model = ov.convert_model(model, input=shapes, example_input=im, dynamo=True)
     else:
         # Skip the nondeterministic re-trace check for NMS models.
         ts = torch.jit._trace.trace(model, im, strict=False, check_trace=False)

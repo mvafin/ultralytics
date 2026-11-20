@@ -216,7 +216,7 @@ class TorchNMS:
             >>> scores = torch.tensor([0.9, 0.8])
             >>> keep = TorchNMS.fast_nms(boxes, scores, 0.5)
         """
-        if boxes.numel() == 0 and exit_early:
+        if exit_early and boxes.numel() == 0:  # check exit_early first: numel() is data-dependent under torch.export
             return torch.empty((0,), dtype=torch.int64, device=boxes.device)
 
         sorted_idx = torch.argsort(scores, descending=True)

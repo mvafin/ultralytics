@@ -51,9 +51,11 @@ establish only the tested artifact identity, not performance or support for unte
 Public tensor names and deployment metadata must also be considered when interpreting the experiment; graph
 equality alone is not a claim that the serialized XML/BIN or the complete deployment contract is identical.
 
-Dynamic Dynamo export requests a dynamic batch and height/width of at least twice the model's largest stride.
-`torch.export` may infer a nonzero minimum spatial size, and OpenVINO rejects a requested unrestricted dimension
-that is wider than the exported range. Inference inputs must still satisfy YOLO's stride requirements.
+Dynamic Dynamo export calls `torch.export.export` directly and passes the `ExportedProgram` to OpenVINO. Height and
+width are declared as `stride * Dim(min=2)`, which matches the divisibility guards of concat-aligned models such as
+YOLOv9 (independent `Dim.AUTO` dimensions fail in the constraint solver). Stride-1 classification models use
+`Dim.AUTO(min=2)`. The resulting IR inputs are `[?,C,64..,64..]` (`128..` for P6 models); OpenVINO shapes cannot
+express divisibility, so inference inputs must still be multiples of the stride, as with TorchScript.
 
 With `nms=True`, the dynamic batch range is **1 through the configured `batch`** because embedded NMS unrolls
 one branch per padded image. Larger batches are rejected by the exported model rather than silently truncated.
@@ -125,3 +127,36 @@ build. Its newer native changes are limited to random operators that these model
   `[?,3,64..,64..]`; classification exports as `[?,3,2..,2..]`. CPU FP32 outputs are bit-identical to TorchScript
   dynamic exports for shapes `(2,3,640,640)`, `(1,3,320,480)`, `(3,3,480,640)`, `(1,3,64,64)`, and `(1,3,1024,768)`.
 - INT8 naming and dynamic-shape latency remain untested follow-up work.
+
+## Model matrix results
+
+The matrix covered 182 official checkpoints and 548 TorchScript/Dynamo pairs on PyTorch 2.15.0+cpu with OpenVINO
+from openvinotoolkit/openvino#40055. Checkpoints included YOLOv3, v5, v6, v8, v9, v10, v11, v12 and v26;
+YOLO-World and YOLO-WorldV2; YOLOE, including prompt-free models; RT-DETR; and FastSAM. All tasks were covered,
+including P6 and grayscale models. The scenarios were static, dynamic, FP16 static and dynamic, NMS static and
+dynamic, and end-to-end static and dynamic. SAM, SAM2, MobileSAM, YOLO-NAS and INT8 were excluded.
+
+- No TorchScript or Dynamo export failed.
+- **465** pairs are identical: 12 raw IRs, 228 after MOC and constant folding, and 225 dynamic pairs when specialized
+  to `(2,C,640,640)`, `(1,C,320,448)` and `(1,C,128,192)`.
+- **79** further pairs produced bit-identical CPU FP32 outputs:
+  - **74 NMS pairs** differ only in integer shape arithmetic. Dynamo uses `Minimum(n, max_det)` with a scalar
+    `Gather`; dynamic NMS also uses symbolic `Maximum`, `Multiply` and `Add` nodes. FastSAM also uses `Ceiling`
+    to lower `trunc`.
+  - **4 YOLOE-v8-seg dynamic pairs** differ because MOC folds the `BNContrastiveHead` BatchNorm and convolution
+    biases in a different order. The difference is at most `1e-6` absolute in three constants. Substituting the
+    TorchScript values makes the graphs identical.
+  - **1 YOLOE-26 prompt-free end-to-end dynamic pair** uses `TopK k=min(N,300)`. The candidate count is
+    data-dependent.
+- **4 FP16 pairs** are RT-DETR static and dynamic, and World and WorldV2 static. `torch.export` folds
+  input-independent computations, such as the AIFI positional embedding and World text projections, into
+  constants. FP16 compression then stores these results in FP16. TorchScript instead computes them in the graph
+  from FP16 seed constants. Their FP32 variants are identical, and mean and maximum errors against FP32 are
+  equivalent.
+- Dynamic Dynamo IRs have explicit bounds: `[?,C,64..,64..]`, with batch `..batch` for embedded NMS. TorchScript
+  IRs are `[?,C,?,?]`.
+
+Two fork changes were needed:
+
+- `fast_nms` checks `exit_early` before `boxes.numel()`, which avoided a data-dependent guard in OBB NMS.
+- Dynamic export now uses stride-derived dimensions.
