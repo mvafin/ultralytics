@@ -130,14 +130,19 @@ build. Its newer native changes are limited to random operators that these model
 
 ## Model matrix results
 
-The matrix covered 182 official checkpoints and 548 TorchScript/Dynamo pairs on PyTorch 2.15.0+cpu with OpenVINO
+The matrix covered 185 official checkpoints and 566 TorchScript/Dynamo pairs on PyTorch 2.15.0+cpu with OpenVINO
 from openvinotoolkit/openvino#40055. Checkpoints included YOLOv3, v5, v6, v8, v9, v10, v11, v12 and v26;
-YOLO-World and YOLO-WorldV2; YOLOE, including prompt-free models; RT-DETR; and FastSAM. All tasks were covered,
-including P6 and grayscale models. The scenarios were static, dynamic, FP16 static and dynamic, NMS static and
-dynamic, and end-to-end static and dynamic. SAM, SAM2, MobileSAM, YOLO-NAS and INT8 were excluded.
+YOLO-World and YOLO-WorldV2; YOLOE, including prompt-free models; RT-DETR; FastSAM; and YOLO-NAS s, m and l.
+All tasks were covered, including P6 and grayscale models. The scenarios were static, dynamic, FP16 static and
+dynamic, NMS static and dynamic, and end-to-end static and dynamic. YOLO-NAS has no embedded-NMS or end-to-end
+head, so its NMS scenarios export the raw head. INT8 was excluded.
+
+SAM, SAM2/2.1, MobileSAM and SAM3 have no OpenVINO export path in Ultralytics: even the default TorchScript export
+fails with `'SAMModel'/'SAM2Model' object has no attribute 'args'`, so there is no IR pair to compare. `LLM` is a
+remote API client. This matrix therefore covers every Ultralytics model family that can export to OpenVINO.
 
 - No TorchScript or Dynamo export failed.
-- **465** pairs are identical: 12 raw IRs, 228 after MOC and constant folding, and 225 dynamic pairs when specialized
+- **480** pairs are identical: 12 raw IRs, 237 after MOC and constant folding, and 231 dynamic pairs when specialized
   to `(2,C,640,640)`, `(1,C,320,448)` and `(1,C,128,192)`.
 - **79** further pairs produced bit-identical CPU FP32 outputs:
   - **74 NMS pairs** differ only in integer shape arithmetic. Dynamo uses `Minimum(n, max_det)` with a scalar
@@ -153,6 +158,14 @@ dynamic, and end-to-end static and dynamic. SAM, SAM2, MobileSAM, YOLO-NAS and I
   constants. FP16 compression then stores these results in FP16. TorchScript instead computes them in the graph
   from FP16 seed constants. Their FP32 variants are identical, and mean and maximum errors against FP32 are
   equivalent.
+- Among the identical pairs, **6 YOLO-NAS FP32 dynamic pairs** have bit-identical static-reshaped outputs, but
+  their dynamic-shape CPU runs differ by at most `1.5e-3` box pixels, matching the drift each IR
+  shows between its own dynamic and static execution.
+- **3 YOLO-NAS FP16 dynamic pairs** keep three neck BatchNorm scales as separate `Multiply` nodes in the Dynamo
+  IR, because those convolution outputs also feed a `ShapeOf` and MOC's Conv-Multiply fusion needs a single
+  consumer. The graphs are identical after specialization in FP32. In FP16, the separate scale is rounded on its
+  own, and maximum error against FP32 matches TorchScript's (for example, 10.09 versus 10.14 box pixels for
+  `yolo_nas_s` at 640x640).
 - Dynamic Dynamo IRs have explicit bounds: `[?,C,64..,64..]`, with batch `..batch` for embedded NMS. TorchScript
   IRs are `[?,C,?,?]`.
 
